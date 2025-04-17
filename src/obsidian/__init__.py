@@ -5,9 +5,8 @@ from typing import Any, Dict, List, Optional, Tuple, TypeVar, TypedDict
 from abstract_singleton import AbstractSingleton, Singleton
 
 
-
 """Obsidian Vault meta-object to imitate the operations of the Obsidian Vault"""
-from obsidian import obsidianVault
+# from obsidian import obsidianVault
 
 PromptGenerator = TypeVar("PromptGenerator")
 
@@ -19,12 +18,14 @@ class Message(TypedDict):
 
 class AutoGPTObsidian(AbstractSingleton, metaclass=Singleton):
     """ This is a plugin for AutoGPT for interfacing with a directory of markdown files like the app Obsidian MD. """
+
     def __init__(self):
         super().__init__()
         self._name = "autogpt-obsidian"
         self._version = "0.1.0"
         self._description = "Obsidian Integrations for Auto-GPT using obsidiantools."
-        self.vault = obsidianVault() 
+        from .obsidianVault import obsidianVault
+        self.vault = obsidianVault()
 
     @abc.abstractmethod
     def can_handle_on_response(self) -> bool:
@@ -71,8 +72,8 @@ class AutoGPTObsidian(AbstractSingleton, metaclass=Singleton):
             },
             _create_note
         )
-        prompt.add_command( 
-            "obsidian_sync_vault", 
+        prompt.add_command(
+            "obsidian_sync_vault",
             "Sync the Obsidian Vault in the workspace with the remote vault.",
             {},
             _sync_vault
@@ -99,7 +100,7 @@ class AutoGPTObsidian(AbstractSingleton, metaclass=Singleton):
             prompt (PromptGenerator): The prompt generator.
             messages (List[str]): The list of messages.
         """
-        
+
         pass
 
     @abc.abstractmethod
@@ -277,7 +278,7 @@ class AutoGPTObsidian(AbstractSingleton, metaclass=Singleton):
           Returns:
               bool: True if the plugin can handle the text_embedding method."""
         return False
-    
+
     @abc.abstractmethod
     def handle_text_embedding(
         self, text: str
@@ -332,4 +333,3 @@ class AutoGPTObsidian(AbstractSingleton, metaclass=Singleton):
             message (str): The message to report.
         """
         pass
-

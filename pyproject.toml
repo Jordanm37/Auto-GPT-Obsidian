@@ -1,38 +1,55 @@
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
 
-[project]
-name = "auto_gpt_obsidian_plugin"
+[tool.poetry]
+name = "auto-gpt-obsidian-plugin"
 version = "0.0.2"
-authors = [
-  { name="Conner Ohnesorge", email="conneroisu@outlook.com" },
-]
 description = "A plugin for autogpt that allows interaction with Obsidian."
+authors = ["Conner Ohnesorge <conneroisu@outlook.com>"]
+license = "MIT"
 readme = "README.md"
-requires-python = ">=3.8"
+homepage = "https://github.com/conneroisu/Auto-GPT-Obsidian"
+repository = "https://github.com/conneroisu/Auto-GPT-Obsidian"
+documentation = "https://github.com/conneroisu/Auto-GPT-Obsidian"
+keywords = ["autogpt", "obsidian", "plugin"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development :: Libraries :: Python Modules",
 ]
-dependencies = ["obsidiantools"]
+packages = [{ include = "obsidian", from = "src" }]
 
-[project.urls]
-"Homepage" = "https://github.com/conneroisu/Auto-GPT-Obsidian"
-"Bug Tracker" = "https://github.com/conneroisu/Auto-GPT-Obsidian/issues"
+[tool.poetry.dependencies]
+python = ">=3.8"
+obsidiantools = "*"
+python-dotenv = "^1.0.1"
+auto_gpt_plugin_template = "*"
+pydantic = "^2.7.1"
+llama-cpp-python = "^0.2.79"
+chromadb = "^0.5.3"
+pyyaml = "^6.0.1"
+fastapi = "^0.111.0"
+uvicorn = {extras = ["standard"], version = "^0.30.1"}
+
+[tool.poetry.group.dev.dependencies]
+pytest = "*"
+flake8 = "*"
+black = "*"
+isort = "*"
+pytest-mock = "^3.12.0"
 
 [tool.black]
 line-length = 88
 target-version = ['py38']
-include = '\.pyi?$'
-extend-exclude = ""
+include = '\\.pyi?$'
 
 [tool.isort]
 profile = "black"
 
-[tool.pylint.messages_control]
-disable = "C0330, C0326"
-
-[tool.pylint.format]
-max-line-length = "88"
+[tool.flake8]
+max-line-length = 88
+extend-ignore = "E203, W503"
