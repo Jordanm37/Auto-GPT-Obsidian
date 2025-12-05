@@ -1,0 +1,18 @@
+front_matter:
+  type: glossary
+  status: draft
+  tags: ["definition"]
+content: |
+  # {{ term | default('Term') }}
+  
+  **Definition:**
+  {{ definition | default('(Definition TBD)') }}
+  
+  {% if context_notes %}
+  **Context/Related:**
+  {% for link in context_notes %}
+  - [[{{ link }}]]
+  {% endfor %}
+  {% endif %}
+  
+  {{ additional_content | default('') }} 

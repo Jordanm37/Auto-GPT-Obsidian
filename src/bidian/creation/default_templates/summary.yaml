@@ -1,0 +1,24 @@
+front_matter:
+  type: summary
+  status: draft
+  tags: ["summary"]
+content: |
+  # Summary: {{ title | default('Untitled Summary') }}
+  
+  {% if source_notes %}
+  **Sources:**
+  {% for link in source_notes %}
+  - [[{{ link }}]]
+  {% endfor %}
+  {% endif %}
+  
+  ## Key Points
+  {% if key_points %}
+  {% for point in key_points %}
+  - {{ point }}
+  {% endfor %}
+  {% else %}
+  (Summary content TBD)
+  {% endif %}
+  
+  {{ additional_content | default('') }} 

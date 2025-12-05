@@ -4,9 +4,9 @@ import logging
 import json
 import time
 from pathlib import Path
-from typing import Dict, Set, Optional
+from typing import Dict, Set, Optional, List
 
-from bidian.indexing.discovery import find_markdown_files, parse_markdown_file
+from bidian.indexing.discovery import find_markdown_files, parse_markdown_file, ParsedNote
 from bidian.indexing.chunking import chunk_by_paragraph, TextChunk
 from bidian.indexing.embedding import EmbeddingGenerator
 from bidian.indexing.vector_store import ChromaVectorStore
@@ -15,6 +15,8 @@ from bidian.indexing.vector_store import ChromaVectorStore
 logger = logging.getLogger(__name__)
 
 DEFAULT_INDEX_STATE_PATH = "./data/index_state.json"
+# Front-matter key to check for exclusion (F-9)
+NO_CURATE_KEY = "no-curate"
 
 
 class Indexer:
@@ -72,24 +74,50 @@ class Indexer:
                 f"Error saving index state to {self.state_path}: {e}", exc_info=True)
 
     def _process_file(self, file_path: Path) -> int:
-        """Parses, chunks, embeds, and adds a single file to the vector store.
+        """Parses, checks exclusions, chunks, embeds, and adds a single file.
+
+        Checks the `no-curate` front-matter key (F-9).
 
         Args:
             file_path: The path to the Markdown file.
 
         Returns:
-            The number of chunks added for this file, or 0 on failure.
+            The number of chunks added for this file, or 0 on failure/exclusion.
         """
         logger.info(f"Processing file: {file_path}")
-        parsed_note = parse_markdown_file(file_path)
+        parsed_note: Optional[ParsedNote] = parse_markdown_file(file_path)
         if not parsed_note:
             logger.warning(f"Skipping file due to parsing error: {file_path}")
             return 0
 
+        # --- Check front-matter exclusion (F-9) ---
+        if parsed_note.front_matter.get(NO_CURATE_KEY, False):
+            logger.info(
+                f"Skipping file due to '{NO_CURATE_KEY}: true' front-matter: {file_path}")
+            # Ensure any existing chunks for this file are removed from the index
+            try:
+                self.vector_store.delete_chunks_by_source(file_path)
+                logger.debug(f"Removed existing chunks for excluded file: {file_path}")
+            except Exception as e:
+                logger.error(
+                    f"Failed to remove chunks for newly excluded file {file_path}: {e}", exc_info=True)
+            return 0  # Return 0 chunks processed
+        # --- End exclusion check ---
+
         chunks: List[TextChunk] = list(chunk_by_paragraph(parsed_note))
         if not chunks:
             logger.info(f"No valid chunks found in file: {file_path}")
-            # Update mtime even if no chunks, to avoid reprocessing empty files
+            # If a file previously had chunks but now has none (or is excluded),
+            # ensure old chunks are removed.
+            try:
+                # This might be slightly inefficient if called often for empty files
+                # but ensures consistency.
+                self.vector_store.delete_chunks_by_source(file_path)
+                logger.debug(
+                    f"Removed existing chunks for file with no new chunks: {file_path}")
+            except Exception as e:
+                logger.error(
+                    f"Failed to remove old chunks for empty file {file_path}: {e}", exc_info=True)
             return 0
 
         try:
@@ -111,24 +139,30 @@ class Indexer:
                 f"Failed to generate embeddings or add chunks for {file_path}: {e}", exc_info=True)
             return 0
 
-    def run_incremental_update(self) -> Dict[str, int]:
+    def run_incremental_update(self,
+                               respect_gitignore: bool = True
+                               ) -> Dict[str, int]:
         """Performs an incremental update of the vector store.
 
-        Detects new, modified, and deleted files based on modification times.
+        Args:
+            respect_gitignore: If True, ignores files matching .gitignore rules.
 
         Returns:
             A dictionary summarizing the update results (added, updated, deleted count).
         """
         start_time = time.monotonic()
-        logger.info("Starting incremental index update...")
+        logger.info(
+            f"Starting incremental index update... (respect_gitignore={respect_gitignore})")
 
-        stats = {"added": 0, "updated": 0, "deleted": 0, "processed_chunks": 0}
+        stats = {"added": 0, "updated": 0, "deleted": 0,
+                 "processed_chunks": 0, "excluded_fm": 0}
         current_files: Dict[str, float] = {}
         found_paths: Set[Path] = set()
 
         # 1. Scan vault for current files and their mtimes
         try:
-            for file_path in find_markdown_files(self.vault_path):
+            # Pass respect_gitignore flag here
+            for file_path in find_markdown_files(self.vault_path, respect_gitignore=respect_gitignore):
                 try:
                     mtime = file_path.stat().st_mtime
                     current_files[str(file_path)] = mtime
@@ -154,8 +188,6 @@ class Indexer:
             path_str for path_str in indexed_paths_set.intersection(current_paths_set)
             if current_files[path_str] > self._indexed_mtimes[path_str]
         }
-        # Files that haven't changed (mtime matches and exists)
-        # unchanged_paths = indexed_paths_set.intersection(current_paths_set) - modified_paths
 
         logger.info(
             f"Identified: {len(new_paths)} new, {len(deleted_paths)} deleted, {len(modified_paths)} modified files.")
@@ -178,31 +210,46 @@ class Indexer:
         for file_path in files_to_process:
             path_str = str(file_path)
             is_update = path_str in modified_paths
+            # Note: Deletion for updates is handled within _process_file now if excluded,
+            # or just before adding new chunks normally.
+            # If a file is modified *to* be excluded, _process_file handles deletion.
+            # If a file is modified *and not* excluded, we might still want to delete
+            # before processing just in case _process_file fails before adding.
+            # Let's refine this slightly: delete before calling _process_file only if it's an update.
             if is_update:
-                logger.info(f"Deleting old chunks for modified file: {path_str}")
+                logger.info(
+                    f"Deleting potentially old chunks for modified file: {path_str}")
                 try:
-                    # Delete old chunks before adding new ones
                     self.vector_store.delete_chunks_by_source(file_path)
                 except Exception as e:
                     logger.error(
-                        f"Failed to delete old chunks for modified file {path_str}: {e}", exc_info=True)
-                    continue  # Skip processing this file if deletion failed
+                        f"Failed to delete old chunks for modified file {path_str} before processing: {e}", exc_info=True)
+                    # Optionally continue, but risk duplicate chunks if processing later fails partially
+                    # continue
 
             processed_count = self._process_file(file_path)
-            if processed_count > 0:
+
+            # Update state regardless of chunk count if the file exists,
+            # to prevent reprocessing unless mtime changes again.
+            # _process_file returns 0 if excluded.
+            if path_str in current_files:
                 self._indexed_mtimes[path_str] = current_files[path_str]
-                stats["processed_chunks"] += processed_count
-                if is_update:
-                    stats["updated"] += 1
-                else:
-                    stats["added"] += 1
-            elif path_str in current_files:  # Record mtime even if file processing failed or yielded 0 chunks
-                self._indexed_mtimes[path_str] = current_files[path_str]
-                # Optionally count as added/updated even with 0 chunks?
-                # if is_update:
-                #     stats["updated"] += 1
-                # else:
-                #     stats["added"] += 1
+                if processed_count > 0:
+                    stats["processed_chunks"] += processed_count
+                    if is_update:
+                        stats["updated"] += 1
+                    else:
+                        stats["added"] += 1
+                # Re-parse quickly to check if it was front-matter exclusion
+                elif parsed_note := parse_markdown_file(file_path):
+                    if parsed_note.front_matter.get(NO_CURATE_KEY, False):
+                        # Count files skipped due to front-matter
+                        stats["excluded_fm"] += 1
+                    # else: count files processed with 0 chunks?
+            # else: file might have been deleted between scan and processing? Log warning.
+            elif path_str not in deleted_paths:  # Avoid logging error if already known deleted
+                logger.warning(
+                    f"File {path_str} disappeared between scan and processing.")
 
         # 5. Save updated state
         self._save_index_state()
@@ -211,22 +258,23 @@ class Indexer:
         duration = end_time - start_time
         logger.info(f"Incremental index update finished in {duration:.2f} seconds.")
         logger.info(
-            f"Stats: Added={stats['added']}, Updated={stats['updated']}, Deleted={stats['deleted']}, Total Chunks Processed={stats['processed_chunks']}")
+            f"Stats: Added={stats['added']}, Updated={stats['updated']}, Deleted={stats['deleted']}, Excluded(FM)={stats['excluded_fm']}, Total Chunks Processed={stats['processed_chunks']}")
         return stats
 
-    def run_full_reindex(self) -> Dict[str, int]:
+    def run_full_reindex(self, respect_gitignore: bool = True) -> Dict[str, int]:
         """Performs a full re-index of the entire vault.
 
-        Clears the existing collection and state before processing all files.
+        Args:
+            respect_gitignore: If True, ignores files matching .gitignore rules.
 
         Returns:
             A dictionary summarizing the reindex results.
         """
         start_time = time.monotonic()
         logger.warning(
-            "Starting full re-index. Clearing existing collection and state...")
+            f"Starting full re-index... (respect_gitignore={respect_gitignore})")
 
-        stats = {"processed_files": 0, "processed_chunks": 0}
+        stats = {"processed_files": 0, "processed_chunks": 0, "excluded_fm": 0}
         self._indexed_mtimes = {}  # Clear in-memory state
         self._save_index_state()  # Clear persisted state
 
@@ -247,23 +295,23 @@ class Indexer:
                 return stats
         else:
             logger.warning("Vector store collection was not initialized. Cannot clear.")
-            # Attempt to proceed anyway, assuming it might be created on first add
 
         # Process all files
         try:
-            for file_path in find_markdown_files(self.vault_path):
+            # Pass respect_gitignore flag here
+            for file_path in find_markdown_files(self.vault_path, respect_gitignore=respect_gitignore):
                 try:
                     mtime = file_path.stat().st_mtime
                     processed_count = self._process_file(file_path)
+                    # Always update mtime in state for files found on disk during full reindex
+                    self._indexed_mtimes[str(file_path)] = mtime
+                    stats["processed_files"] += 1
                     if processed_count > 0:
-                        self._indexed_mtimes[str(file_path)] = mtime
-                        stats["processed_files"] += 1
                         stats["processed_chunks"] += processed_count
-                    else:
-                        # Record mtime even if processing failed/yielded 0 chunks, so it's not picked up as 'new' later
-                        self._indexed_mtimes[str(file_path)] = mtime
-                        # Count as processed even if 0 chunks
-                        stats["processed_files"] += 1
+                    # Check if excluded
+                    elif parsed_note := parse_markdown_file(file_path):
+                        if parsed_note.front_matter.get(NO_CURATE_KEY, False):
+                            stats["excluded_fm"] += 1
 
                 except OSError as e:
                     logger.warning(
@@ -277,7 +325,7 @@ class Indexer:
         duration = end_time - start_time
         logger.info(f"Full re-index finished in {duration:.2f} seconds.")
         logger.info(
-            f"Stats: Files Processed={stats['processed_files']}, Total Chunks Added={stats['processed_chunks']}")
+            f"Stats: Files Processed={stats['processed_files']}, Excluded(FM)={stats['excluded_fm']}, Total Chunks Added={stats['processed_chunks']}")
         return stats
 
 

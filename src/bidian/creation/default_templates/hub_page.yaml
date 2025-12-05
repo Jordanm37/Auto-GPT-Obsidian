@@ -1,0 +1,28 @@
+front_matter:
+  type: hub
+  status: wip
+  tags: ["map-of-content"]
+content: |
+  # {{ title | default('Hub Page') }}
+  
+  This page connects related concepts.
+  
+  ## Outline
+  {% if outline %}
+  {% for item in outline %}
+  - {{ item }}
+  {% endfor %}
+  {% else %}
+  (Outline TBD)
+  {% endif %}
+  
+  ## Related Notes
+  {% if backlinks %}
+  {% for link in backlinks %}
+  - [[{{ link }}]]
+  {% endfor %}
+  {% else %}
+  (No specific backlinks identified yet)
+  {% endif %}
+  
+  {{ additional_content | default('') }} 

@@ -2,10 +2,11 @@
 
 import logging
 from pathlib import Path
-from typing import List, Generator, Dict, Any, Optional, Tuple
+from typing import List, Generator, Dict, Any, Optional, Tuple, Callable
 
 import yaml
 from pydantic import BaseModel, Field
+import gitignore_parser
 
 # Configure logger for this module
 logger = logging.getLogger(__name__)
@@ -90,29 +91,16 @@ def parse_markdown_file(file_path: Path) -> Optional[ParsedNote]:
         return None
 
 
-def find_and_parse_markdown_files(vault_path: Path) -> Generator[ParsedNote, None, None]:
-    """Finds and parses all Markdown files in the vault.
-
-    Combines finding files and parsing them into a single generator.
-
-    Args:
-        vault_path: The absolute path to the Obsidian vault directory.
-
-    Yields:
-        ParsedNote objects for each successfully parsed Markdown file.
-    """
-    # Reuse the find_markdown_files logic for discovery
-    for file_path in find_markdown_files(vault_path):
-        parsed_note = parse_markdown_file(file_path)
-        if parsed_note:
-            yield parsed_note
-
-
-def find_markdown_files(vault_path: Path) -> Generator[Path, None, None]:
+def find_markdown_files(
+    vault_path: Path,
+    respect_gitignore: bool = True
+) -> Generator[Path, None, None]:
     """Recursively finds all Markdown (.md) files in the given directory.
 
     Args:
         vault_path: The absolute path to the Obsidian vault directory.
+        respect_gitignore: If True, loads .gitignore from the vault path and ignores
+                           matching files/directories.
 
     Yields:
         Path objects representing the found Markdown files.
@@ -125,15 +113,63 @@ def find_markdown_files(vault_path: Path) -> Generator[Path, None, None]:
         logger.error(msg)
         raise FileNotFoundError(msg)
 
+    ignore_matcher: Optional[Callable[[Path], bool]] = None
+    if respect_gitignore:
+        gitignore_path = vault_path / ".gitignore"
+        if gitignore_path.is_file():
+            try:
+                with open(gitignore_path, 'r') as f:
+                    ignore_matcher = gitignore_parser.parse(f)
+                logger.info(f"Loaded .gitignore rules from {gitignore_path}")
+            except OSError as e:
+                logger.warning(
+                    f"Could not read .gitignore file at {gitignore_path}: {e}")
+        else:
+            logger.debug("No .gitignore file found in vault path.")
+
     logger.info(f"Starting Markdown file discovery in: {vault_path}")
     count = 0
-    for file_path in vault_path.rglob("*.md"):
-        if file_path.is_file():
-            logger.debug(f"Found Markdown file: {file_path}")
-            yield file_path
-            count += 1
-        else:
-            logger.warning(
-                f"Found item matching *.md pattern, but it's not a file: {file_path}")
+    # Use rglob to find all potential files efficiently
+    for item_path in vault_path.rglob("*"):  # Find all items first
+        # Check if ignored before checking type or suffix
+        if ignore_matcher and ignore_matcher(item_path):
+            # logger.debug(f"Ignoring path due to .gitignore: {item_path}")
+            continue
 
-    logger.info(f"Finished discovery. Found {count} Markdown files.")
+        # Now check if it's a markdown file
+        if item_path.is_file() and item_path.suffix.lower() == ".md":
+            logger.debug(f"Found Markdown file: {item_path}")
+            yield item_path
+            count += 1
+        # We don't need to log non-markdown files unless debugging specific ignore rules
+        # else:
+        #     if item_path.is_file():
+        #         logger.debug(f"Ignoring non-markdown file: {item_path}")
+        #     else:
+        #          logger.debug(f"Ignoring directory: {item_path}")
+
+    logger.info(
+        f"Finished discovery. Found {count} Markdown files (respect_gitignore={respect_gitignore}).")
+
+
+def find_and_parse_markdown_files(
+    vault_path: Path,
+    respect_gitignore: bool = True
+) -> Generator[ParsedNote, None, None]:
+    """Finds and parses all Markdown files in the vault.
+
+    Combines finding files (respecting .gitignore) and parsing them.
+
+    Args:
+        vault_path: The absolute path to the Obsidian vault directory.
+        respect_gitignore: Passed to find_markdown_files.
+
+    Yields:
+        ParsedNote objects for each successfully parsed Markdown file.
+    """
+    # Reuse the find_markdown_files logic for discovery
+    for file_path in find_markdown_files(vault_path, respect_gitignore=respect_gitignore):
+        # Note: Front-matter exclusion happens later in the Indexer
+        parsed_note = parse_markdown_file(file_path)
+        if parsed_note:
+            yield parsed_note
